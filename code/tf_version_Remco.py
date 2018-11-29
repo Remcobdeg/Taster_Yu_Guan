@@ -45,6 +45,7 @@ def create_batches(data_x,data_y,range_B, seed, random_start = False):
     n_classes = data_y.shape[1] 
     
     #determine the batche size in range
+    seed += 1 #increase seed every time it is used
     np.random.seed(seed) #set seed for reproduction porposes
     B = np.random.randint(range_B[0],range_B[1],1)[0] #use [0] because the function returns an array and we want a number only
     #the new length of the data
@@ -54,6 +55,7 @@ def create_batches(data_x,data_y,range_B, seed, random_start = False):
     #define the sample at which each batch starts
     if random_start == True:
         #randomly chose the first sample for each batch
+        seed += 1 #increase seed every time it is used
         np.random.seed(seed) #set seed for reproduction porposes
         start_sample = np.random.randint(low=1,high=T*(1-1/B),size=B) 
     else:
@@ -75,7 +77,7 @@ def create_batches(data_x,data_y,range_B, seed, random_start = False):
     coverage = len(np.unique(np.reshape(coverage, (-1))))/T
     print("coverage = %.3f" % (coverage))
 
-    return train_x_3D, train_y_3D, coverage
+    return train_x_3D, train_y_3D, coverage, seed
 
 
 #### 3 CREATING THE MODEL ####
@@ -113,126 +115,134 @@ def HAR_model(x, states_in, keep_prob, n_layers, nodes, classes):
     
     return output, state
 
-
-#### 4 TRAINING THE MODEL ####
-    
-def train_models(train_x, train_y, dropout, n_layers, nodes, range_B, n_epochs, seed, losstype = 'logloss'):
-    
-    #first reset the computational graph (tensorflow struction)
-    tf.reset_default_graph()
-
-    dims = train_x.shape[1]
-    classes = train_y.shape[1]
-    
-    #create placeholders
-    x, y, states_in, keep_prob = create_placeholders(dims, classes, n_layers, nodes)
-    
-    #Forward propagation: Build the forward propagation in the tensorflow graph
-    logits, state = HAR_model(x, states_in, keep_prob, n_layers, 256, classes) 
+def model_exe_funcs(output,y,losstype,learning_rate):
     
     #define predictions and actual label functions - used later for calculating accuracy and f1-score
-    f_prediction = tf.argmax(logits,2) #index of max value along the features axis
-    f_actual = tf.argmax(y,2) #correct label for each predition    
+    f_prediction = tf.argmax(output,2) #index of max value along the features axis
+    f_actual = tf.argmax(y,2) #correct label for each predition  
     
-    #temp position
-    probs = tf.nn.softmax(logits) 
-    #probs = tf.exp(logits) / tf.reduce_sum(tf.exp(logits), axis = -1) #softmax to calculate the probability distribution of the classes
-
+    #get the prediction as a probability distribution (needed for f1-loss and the essembly)
+    f_prediction_probs = tf.nn.softmax(output)
     
     #define the cost function    
-    if losstype == 'logloss':
+    if losstype == 'CE':
         f_cost = tf.reduce_mean(
-                tf.losses.softmax_cross_entropy(logits = logits, onehot_labels = y))
+                tf.losses.softmax_cross_entropy(logits = output, onehot_labels = y))
     elif losstype == 'f1loss':
         #formula 18 in Guan, Y., & Ploetz, T. (2017). Ensembles of Deep LSTM Learners for Activity Recognition using Wearables. Proc. ACM Interact. Mob. Wearable Ubiquitous Technol, 1(11). https://doi.org/10.1145/3090076
-        print(probs)
-        f_cost = 1 - (2*tf.reduce_sum(tf.multiply(probs,y))/(tf.reduce_sum(probs) + tf.reduce_sum(y)))
+        f_cost = 1 - (2*tf.reduce_sum(tf.multiply(f_prediction_probs,y))/(tf.reduce_sum(f_prediction_probs) + tf.reduce_sum(y)))
     
     #define the optimizer
-    optimizer = tf.train.AdamOptimizer(learning_rate=0.001).minimize(f_cost)
+    optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(f_cost)
     
     init = tf.global_variables_initializer() #initializer
     
-    with tf.Session() as sess:
-        
-        #initialize variables
-        sess.run(init)
-        
-        #run training loop 
-        for epoch in range(n_epochs):
-            
-            #reshape data into batches starting at different starting points
-            train_x_3D, train_y_3D, coverage = create_batches(train_x,train_y,range_B, seed, random_start = True)
-            B = train_x_3D.shape[0] #batch size
-            L_batch = train_x_3D.shape[1]
-            
-            #initialize states
-            states = np.zeros((n_layers,2,train_x_3D.shape[0],nodes))
-            
-            #initialize containers
-            sum_loss = 0 #updating the cost after each batch
-            L_seq = 0 #length of data currently processed
-            i = 0 #counter of the number of windows processed
-            
-            #update parameters per window length
-            while L_seq < L_batch:
-                
-                #update and set random seed
-                seed = seed + 1 #change seed each window
-                np.random.seed(seed) #set seed for reproduction porposes
-
-                #define window length 
-                L_i = np.random.randint(low=16,high=32,size=1)[0] #window
-                #steps = train_x_3D.shape[1]//L_seq
-                #print(L_seq, steps, L_seq.dtype, steps.dtype)
-                #print("the training batch is processed in %3i steps of %3i samples (window length)" % (L_seq,steps))
-                
-                #define minibatches
-                minibatch_x = train_x_3D[:,L_seq:(L_seq+L_i),:]
-                minibatch_y = train_y_3D[:,L_seq:(L_seq+L_i),:]                
-                
-                #select data to feed into the training step
-                feed_dict = {x: minibatch_x, y: minibatch_y, 
-                             states_in: states, keep_prob: 1-dropout}
-                
-                #train model
-                _, loss, states, prediction, actual, probs_out,y_out = sess.run([optimizer, f_cost, state, f_prediction, f_actual, probs,y], feed_dict = feed_dict)
-                
-                print("sum y, sum logits, y*logits")
-                print(np.sum(y_out))
-                print(np.sum(probs_out))
-                print(np.sum(probs_out*y_out))
-                
-                
-                #flatten 'prediction' and 'actual' for calculating accuracy and f1
-                prediction = np.reshape(prediction, (-1))
-                actual = np.reshape(actual, (-1))
-                
-                #calculate the accuracy
-                accuracy = np.mean(prediction == actual)
-                
-                #calculate f1-score: F1 = 2 * (precision * recall) / (precision + recall)
-                f1 = f1_score(y_true = actual, y_pred = prediction, average='macro')                
-                #macro: Calculate metrics for each label of multi-class labels, and find their unweighted mean.
-                
-                #calculate batch wise cost
-                sum_loss += loss
-
-                L_seq += L_i #update processed sequence length
-                processed_sz = B*L_seq #number of samples currently processed
-
-                i += 1
-                if i % 20 == 0:
-                    print("Epoch %i, after %i windows trainded %i samples, loss = %.3f, accuracy = %.2f, f1-score: %.2f" % (epoch, i, processed_sz,sum_loss,accuracy,f1))
- 
-            print("Epoch-wise loss = %.3f" % (sum_loss))
-
+    return f_prediction, f_actual, f_prediction_probs, f_cost, optimizer, init
 
 #### 4 TRAINING THE MODEL ####
     
-def validate_models(sess, valid_x, valid_y, x, y, states_in, keep_prob, valid_window, 
-                    n_layers, nodes, f_cost,f_prediction, f_actual):
-    #dropout = 0
+#def train_models(train_x, train_y, dropout, n_layers, nodes, range_B, n_epochs, seed, losstype = 'CE'):
+
+def train_models(train_x, train_y, dropout, #data
+                 x, y, states_in, keep_prob, #placeholders
+                 state, #from forward propagation
+                 f_prediction, f_actual, f_cost, optimizer, init, #modelling functions
+                 n_layers, nodes, #for setting initial state
+                 range_B, range_L, seed, #for constructing mini-batches
+                 n_epochs):
+    
+    sess = tf.Session()
+        
+    #initialize variables
+    sess.run(init)
+    
+    #run training loop 
+    for epoch in range(n_epochs):
+        
+        #reshape data into batches starting at different starting points
+        train_x_3D, train_y_3D, coverage, seed = create_batches(train_x,train_y,range_B, seed, random_start = True)
+        B = train_x_3D.shape[0] #batch size
+        L_batch = train_x_3D.shape[1]
+        
+        #initialize states
+        states = np.zeros((n_layers,2,train_x_3D.shape[0],nodes))
+        
+        #initialize containers
+        loss_epoch = 0 #updating the cost after each batch
+        L_seq = 0 #length of data currently processed
+        i = 0 #counter of the number of windows processed
+        actual_epoch = []
+        prediction_epoch = []
+        
+        #update parameters per window length
+        while L_seq < L_batch:
+            
+            #update and set random seed
+            seed += 1 #change seed each window
+            np.random.seed(seed) #set seed for reproduction porposes
+
+            #define window length 
+            L_i = np.random.randint(low=range_L[0],high=range_L[1],size=1)[0] #window
+ 
+            #define minibatches
+            minibatch_x = train_x_3D[:,L_seq:(L_seq+L_i),:]
+            minibatch_y = train_y_3D[:,L_seq:(L_seq+L_i),:]                
+            
+            #select data to feed into the training step
+            feed_dict = {x: minibatch_x, y: minibatch_y, 
+                         states_in: states, keep_prob: 1-dropout}
+            
+            #train model
+            _, loss, states, prediction, actual = sess.run([optimizer, f_cost, state, f_prediction, f_actual], feed_dict = feed_dict)
+                    
+            #flatten 'prediction' and 'actual' for calculating accuracy and f1
+            prediction = np.reshape(np.array(prediction), (-1))
+            actual = np.reshape(np.array(actual), (-1))
+            
+            #calculate the accuracy
+            accuracy = np.mean(prediction == actual)
+            
+            #calculate f1-score: F1 = 2 * (precision * recall) / (precision + recall)
+            f1 = f1_score(y_true = actual, y_pred = prediction, average='macro')                
+            #macro: Calculate metrics for each label of multi-class labels, and find their unweighted mean.
+
+            L_seq += L_i #update processed sequence length
+            processed_sz = B*L_seq #number of samples currently processed
+
+            i += 1
+            if i % 20 == 0:
+                print("Epoch %i, after %i windows trainded %i samples, avg. loss = %.3f, accuracy = %.2f, f1-score: %.2f" % (epoch, i, processed_sz,loss/(L_i*B),accuracy,f1))
+                print("Classes in the true labels:")
+                print(np.unique(actual))
+                print("Classes in the prediction:")
+                print(np.unique(prediction))
+                
+            #combine mini-batch-wise results to determine epoch-wise results
+            actual_epoch.extend(actual)
+            prediction_epoch.extend(prediction)
+            loss_epoch += loss * B * L_i #'loss' is average loss, we need total loss
+            
+        #calculate the epoch-wise accuracy
+        accuracy = np.mean(prediction_epoch == actual_epoch)
+            
+        #calculate epoch-wise f1-score: F1 = 2 * (precision * recall) / (precision + recall)
+        f1 = f1_score(y_true = actual_epoch, y_pred = prediction_epoch, average='macro')                
+ 
+        print("Result epoch %i of %i: \n average loss: %.3f, accuracy: %.2f, f1-score: %.2f" 
+              % (epoch, n_epochs, loss_epoch/processed_sz, accuracy, f1))
+        
+    return sess, accuracy, f1, seed
+
+
+#### 5 VALIDATE/TEST THE MODEL ####
+    
+def eval_models(sess, 
+                    data_x, data_y, #data
+                    x, y, states_in, keep_prob, #placeholders
+                    state, #from forward propagation
+                    f_prediction, f_actual, f_prediction_probs, f_cost, init, #modelling functions
+                    n_layers, nodes, #for setting initial state
+                    data_window): 
     
     #initialize states to zero
     states = np.zeros((n_layers,2,1,nodes)) #2 states in each unrolled LSTM cell, batch size = 1
@@ -240,46 +250,68 @@ def validate_models(sess, valid_x, valid_y, x, y, states_in, keep_prob, valid_wi
     #initialize containers
     prediction = [] #container for predictions in every window
     actual = []  #container for actual labels in every window
-    loss = [] #container for the validation/test loss
+    prediction_probs = np.zeros((data_y.shape)) #container for probabilities in every window
+    loss = 0 #container for the validation/test loss
     
-    for i in np.ceil(valid_x.shape[0]/valid_window):
+    #the model expects the data to be 3D (with batch size as first dim) - our batch size = 1 for the test and validation
+    data_x = np.reshape(data_x, (1, data_x.shape[0], data_x.shape[1]))
+    data_y = np.reshape(data_y, (1, data_y.shape[0], data_y.shape[1]))
+    
+    #loop over the number of times the window fits in the data (rounded upwards, because we want to use all the data)
+    for i in range(np.ceil(data_x.shape[1]/data_window).astype(np.int)):
         
         #define the sample indices included in the window; for the last window, a shorter window needs to be chosen
-        window = range(valid_window*i, 
-                            np.min(valid_window*(i+1),valid_x.shape[0]))
+        window = range(data_window*i, 
+                            np.min([data_window*(i+1),data_x.shape[1]]))
 
-        feed_dict = {x: valid_x[:,window,:], y: valid_y[:,window,:], 
+        feed_dict = {x: data_x[:,window,:], y: data_y[:,window,:], 
                      states_in: states, keep_prob: 1}
         
         #run the model to calculate loss, predictions, actual lables - i refers to the window number
-        loss_i,prediction_i, actual_i = sess.run([f_cost,f_prediction, f_actual], feed_dict = feed_dict)
+        loss_i, states, prediction_i, actual_i, prediction_probs_i = sess.run(
+                [f_cost, state, f_prediction, f_actual, f_prediction_probs], feed_dict = feed_dict)
         
-        #flatten 'prediction' and 'actual' for calculating accuracy and f1
-        loss.extend(loss_i)
-        prediction.extend(np.reshape(prediction_i, (-1)))
-        actual.extend(np.reshape(actual_i, (-1)))
+        #flatten and store 'prediction' and 'actual' for calculating accuracy and f1
+        prediction.extend(np.reshape(np.array(prediction_i), (-1)))
+        actual.extend(np.reshape(np.array(actual_i), (-1)))
+        prediction_probs[window,:] = prediction_probs_i
+        
+        #to calculate the average loss over the validation after processing the 
+        #whole batch, we need to devide the total loss by the whole sample size
+        #loss.append(loss_i*len(window))
+        
+        loss += loss_i * len(window) #translate average loss to sum loss (because last window has different size)
         
     #calculate the average validation/test loss
-    loss = np.mean(loss)
+    loss = loss/data_x.shape[1]
     
     #calculate the accuracy
-    accuracy = np.mean(prediction == actual)
+    accuracy = np.mean(np.array(prediction) == np.array(actual))
     
     #calculate f1-score: F1 = 2 * (precision * recall) / (precision + recall)
-    f1 = f1_score(y_true = actual, y_pred = prediction, average='macro')                
+    f1 = f1_score(y_true = np.array(actual), y_pred = np.array(prediction), average='macro')                
     #macro: Calculate metrics for each label of multi-class labels, and find their unweighted mean.
     
-    print("validation of %s: \n loss: %.3f, accuracy: %.2f, f1-score: %.2f" % 
+    print("Classes in the true labels:")
+    print(np.unique(actual))
+    print("Classes in the prediction:")
+    print(np.unique(prediction))
+    
+    print("Total: \n loss: %.3f, accuracy: %.2f, f1-score: %.2f" % 
           (loss, accuracy, f1))
+    
+    return accuracy, f1, prediction_probs
+
          
 
 #### PICK BEST X-MODELS FROM VALIDATION SET ####
 
 #### TEST MODEL PERFORMANCE ON TEST SET ####
+
+#### 5 VALIDATE/TEST THE MODEL ####
         
 #### C DEFINING PARAMETERS AND RUN THE CODE ####
 
-seed = 0 #initialize seed
 
 #choose which database to use
 DB = 79 #79 is opp, 52 is pam, 60 is skoda
@@ -289,20 +321,37 @@ nodes = 256
 n_layers = 2
 
 #Set hyperparameters
-range_B = [128, 256] #range of batch length
+range_B = [128, 256] #range of batch size when training
+range_L = [16,32] #range of window length when training
 dropout = .5
 n_epochs = 2
-losstype = 'logloss'
+losstype = 'CE'
+learning_rate=0.001
+n_training_models = 2
+
+#Model embedding structure 
+best_of_n_CE = [2,3] #how many models to create using cross-entropy and how many of the best to keep for the embedded model 
+best_of_n_F1 = [0,0] #how many models to create using f1-loss and how many of the best to keep for the embedded model 
 
 #Set validation parameters
 valid_window = 5000
 
+#Set test parameters
+test_window = 5000
+
+
 
 #### RUN CODE ####
 
+#TO DO: PRINT STATEMENT ABOUT WHAT MODEL IS BEING CREATED AND WHERE DATA WILL BE STORED
+
+seed = 0 #initialize seed
+
+#first reset the computational graph (tensorflow struction)
+tf.reset_default_graph()
 
 #load the database through the function 'loadingDB()' from dataset.py    
-#train_x, valid_x, test_x, train_y, valid_y, test_y = loadingDB('../', DB)
+train_x, valid_x, test_x, train_y, valid_y, test_y = loadingDB('../', DB)
 
 #the y-variables have been loaded as databases, which causes some manipulation challenges
 #thus we will reshape those to numpy arrays
@@ -310,9 +359,115 @@ train_y = np.array(train_y)
 valid_y = np.array(valid_y)
 test_y = np.array(test_y)
 
+###### TEMP STEPS TO SPEED UP TRAINING: REDUCE DATA SIZE 10x #######
+train_x = train_x[:round(train_x.shape[0]/10),:]
+train_y = train_y[:round(train_y.shape[0]/10),:]
+range_B = [16,32]
+#####################################################################
 
+dims = train_x.shape[1]
+classes = train_y.shape[1]
 
-train_models(train_x, train_y, dropout, n_layers, nodes, range_B, n_epochs, seed, losstype = 'logloss')
+#create placeholders
+x, y, states_in, keep_prob = create_placeholders(dims, classes, n_layers, nodes)
 
+#Create model/Forward propagation: Build the forward propagation in the tensorflow graph
+output, state = HAR_model(x, states_in, keep_prob, n_layers, nodes, classes) 
 
-      
+#create a function to save weights and biases from training
+saver = tf.train.Saver(tf.trainable_variables(), max_to_keep=1000)
+
+#TO DO: LOOP OVER BOTH LOSS TYPES, PROPER DOCUMENTATION
+best_of_n = best_of_n_CE
+losstype = 'CE'
+
+pre_test_results = np.zeros((best_of_n[1],5))
+
+for model in range(best_of_n[1]):
+     
+    #define model name based on loss-type used and n-th model created of that loss-type
+    model_name = losstype + '_model_' + str(model+1)
+    
+    #define model execution parameters (only f_cost depends on the loss-type)
+    f_prediction, f_actual, f_prediction_probs, f_cost, optimizer, init = model_exe_funcs(output,y,losstype,learning_rate)
+
+    #train the model
+    sess, accuracy_train, f1_train, seed = train_models(train_x, train_y, dropout, #data
+                     x, y, states_in, keep_prob, #placeholders
+                     state, #from forward propagation
+                     f_prediction, f_actual, f_cost, optimizer, init, #modelling functions
+                     n_layers, nodes, #for setting initial state
+                     range_B, range_L, seed, #for constructing mini-batches
+                     n_epochs)
+    
+    pre_test_results[model,0] = model + 1
+    pre_test_results[model,1] = accuracy_train
+    pre_test_results[model,2] = f1_train
+
+    #save the model
+    saver.save(sess, './model/' + model_name)
+    print("Training " + model_name + " complete and saved")
+    
+    #perform validation
+    accuracy_valid, f1_valid, _ = eval_models(sess, 
+                valid_x, valid_y, #data
+                x, y, states_in, keep_prob, #placeholders
+                state, #from forward propagation
+                f_prediction, f_actual, f_prediction_probs, f_cost, init, #modelling functions
+                n_layers, nodes, #for setting initial state
+                valid_window)
+    
+    pre_test_results[model,3] = accuracy_valid
+    pre_test_results[model,4] = f1_valid
+         
+    sess.close() 
+
+#perform the model on the test set
+    
+#we select the 'best' models on the f1 performance on the validation set (others scores are for information purpose only)
+
+#sort the validation results based on the performance on f1
+pre_test_results = pre_test_results[np.argsort(pre_test_results[:,4]),:] 
+
+#get the model references of the n-best models
+best_models = pre_test_results[:best_of_n[0],0]
+
+####----this is where the function should end and return best_models per loss type
+
+#initialize a matrix to store the probabilities of the predictions from the models that build the embedded model
+prediction_probs_all_models = np.zeros((len(best_models),test_y.shape[0],test_y.shape[1])) 
+
+with tf.Session() as sess:
+
+    i = 0 #counter parrellel to the 'model' index, because 'model' is not from 0:n_models
+    
+    for model in best_models:
+        
+        #find the name of the corresponding model
+        model_name = losstype + '_model_' + str(int(model))
+        
+        #load the weights and biases from the corresponding session
+        saver.restore(sess, './model/' + model_name)
+    
+        _,_,prediction_probs = eval_models(sess, 
+                        test_x, test_y, #data
+                        x, y, states_in, keep_prob, #placeholders
+                        state, #from forward propagation
+                        f_prediction, f_actual, f_prediction_probs, f_cost, init, #modelling functions
+                        n_layers, nodes, #for setting initial state
+                        test_window)
+        
+        prediction_probs_all_models[i,:,:] = prediction_probs
+        
+        i = i + 1 #update counter
+            
+prediction_probs_all_models = np.sum(prediction_probs_all_models, axis = 0)
+
+prediction = np.argmax(prediction_probs_all_models, axis = -1)
+actual = np.argmax(test_y, axis = -1)
+accuracy = np.mean(prediction == actual)
+f1 = f1_score(y_true = np.array(actual), y_pred = np.array(prediction), average='macro')
+    
+print("Embedded model has accuracy of %.2f and f1-score of %.2f" % (accuracy, f1))    
+
+#TO DO: PRINT END STATEMENT ABOUT COMPLETEION AND WHAT MODEL WAS BEING CREATED AND STORED WHERE

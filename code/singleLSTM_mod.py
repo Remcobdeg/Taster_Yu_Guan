@@ -239,7 +239,7 @@ def train_recurrent_neural_network (x, range_mb=[128, 256], range_win=[16, 32], 
 
 	# to save tensorflow model 
 	tf_vars_to_save = tf.trainable_variables()
-	saver = tf.train.Saver(tf_vars_to_save, max_to_keep=99999)
+	saver = tf.train.saver(tf_vars_to_save, max_to_keep=99999)
 
 	results = np.empty([0, 5], dtype=np.float32) # train_err, valid_cost, test_cost, val_f1, test_f1
 

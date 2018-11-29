@@ -8,6 +8,7 @@ import pickle
 import pandas as pd
 import pdb #debugging package - use by including 'pdb.set_trace()' in code
 
+## this is a test function 
 #R select the data set to use an d load data
 setnum = 1#1 is opp79, 2 is pamap2, 3 is skoda
 if setnum == 1:
