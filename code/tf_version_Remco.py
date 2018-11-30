@@ -22,7 +22,7 @@ Created on Wed Oct 31 13:46:03 2018
 
 
 #### LOAD LIBRARIES ####
-import tensorflow as tf #gerneral deep learning package
+import tensorflow-gpu as tf #gerneral deep learning package
 from dataset import loadingDB #dataset.py in same folder - shapes train, valid and test datasets
 import numpy as np #general package for useful programming commands
 from sklearn.metrics import f1_score #calculates test performance score
