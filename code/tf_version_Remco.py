@@ -22,7 +22,7 @@ Created on Wed Oct 31 13:46:03 2018
 
 
 #### LOAD LIBRARIES ####
-import tensorflow-gpu as tf #gerneral deep learning package
+import tensorflow as tf #gerneral deep learning package
 from dataset import loadingDB #dataset.py in same folder - shapes train, valid and test datasets
 import numpy as np #general package for useful programming commands
 from sklearn.metrics import f1_score #calculates test performance score
@@ -51,11 +51,11 @@ def get_parameters():
         'range_B' : [128, 256], #range of batch size when training
         'range_L' : [16,32], #range of window length when training
         'dropout' : .5,
-        'n_epochs' : 2, #epochs per model
+        'n_epochs' : 100, #epochs per model
         'learning_rate' :0.001,
         
         #Model embedding structure 
-        'best_of_n_CE' : [2,3], #how many models to create using cross-entropy and how many of the best to keep for the embedded model 
+        'best_of_n_CE' : [1,30], #how many models to create using cross-entropy and how many of the best to keep for the embedded model 
         'best_of_n_F1' : [0,0], #how many models to create using f1-loss and how many of the best to keep for the embedded model 
         
         #Set validation parameters
