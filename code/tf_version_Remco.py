@@ -27,7 +27,45 @@ from dataset import loadingDB #dataset.py in same folder - shapes train, valid a
 import numpy as np #general package for useful programming commands
 from sklearn.metrics import f1_score #calculates test performance score
 from sklearn.metrics import confusion_matrix #performance diagnostic tool
+import os #to check whether a path exists
+import pandas as pd #to create dataframes
+import shutil #to delete folders
+import csv #to print dictionaries
 import pdb #debugging package - use by including 'pdb.set_trace()' in code
+
+
+def get_parameters():
+    
+    parameters = {
+        'overwrite' : [False,True][1], #whether to overwrite files if storage folder already exists
+        'GPU' : [False,True][1], #use GPU for tensorflow model execution
+        
+        #choose which database to use
+        'DB' : 79, #79 is opp, 52 is pam, 60 is skoda
+        
+        #Model parameters
+        'nodes' : 256,
+        'n_layers' : 2,
+        
+        #Set hyperparameters
+        'range_B' : [128, 256], #range of batch size when training
+        'range_L' : [16,32], #range of window length when training
+        'dropout' : .5,
+        'n_epochs' : 2, #epochs per model
+        'learning_rate' :0.001,
+        
+        #Model embedding structure 
+        'best_of_n_CE' : [2,3], #how many models to create using cross-entropy and how many of the best to keep for the embedded model 
+        'best_of_n_F1' : [0,0], #how many models to create using f1-loss and how many of the best to keep for the embedded model 
+        
+        #Set validation parameters
+        'valid_window' : 5000,
+        
+        #Set test parameters
+        'test_window' : 5000
+        }
+    
+    return parameters
 
 #### 1 LOAD DATA ####
 
@@ -128,7 +166,7 @@ def model_exe_funcs(output,y,losstype,learning_rate):
     if losstype == 'CE':
         f_cost = tf.reduce_mean(
                 tf.losses.softmax_cross_entropy(logits = output, onehot_labels = y))
-    elif losstype == 'f1loss':
+    elif losstype == 'F1':
         #formula 18 in Guan, Y., & Ploetz, T. (2017). Ensembles of Deep LSTM Learners for Activity Recognition using Wearables. Proc. ACM Interact. Mob. Wearable Ubiquitous Technol, 1(11). https://doi.org/10.1145/3090076
         f_cost = 1 - (2*tf.reduce_sum(tf.multiply(f_prediction_probs,y))/(tf.reduce_sum(f_prediction_probs) + tf.reduce_sum(y)))
     
@@ -141,17 +179,19 @@ def model_exe_funcs(output,y,losstype,learning_rate):
 
 #### 4 TRAINING THE MODEL ####
     
-#def train_models(train_x, train_y, dropout, n_layers, nodes, range_B, n_epochs, seed, losstype = 'CE'):
-
 def train_models(train_x, train_y, dropout, #data
                  x, y, states_in, keep_prob, #placeholders
                  state, #from forward propagation
                  f_prediction, f_actual, f_cost, optimizer, init, #modelling functions
                  n_layers, nodes, #for setting initial state
                  range_B, range_L, seed, #for constructing mini-batches
-                 n_epochs):
+                 n_epochs,GPU):
     
-    sess = tf.Session()
+    if GPU: #configuring GPU use for tensorflow models
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth = True
+        sess = tf.Session(config=config) # is use gpu
+    else: sess = tf.Session() #or use only the CPU   
         
     #initialize variables
     sess.run(init)
@@ -211,11 +251,11 @@ def train_models(train_x, train_y, dropout, #data
 
             i += 1
             if i % 20 == 0:
-                print("Epoch %i, after %i windows trainded %i samples, avg. loss = %.3f, accuracy = %.2f, f1-score: %.2f" % (epoch, i, processed_sz,loss/(L_i*B),accuracy,f1))
-                print("Classes in the true labels:")
-                print(np.unique(actual))
-                print("Classes in the prediction:")
-                print(np.unique(prediction))
+                print("Epoch %i, after %i windows trainded %i samples, avg. loss = %.3f, accuracy = %.2f, f1-score: %.2f" % (epoch, i, processed_sz,loss,accuracy,f1))
+#                print("Classes in the true labels:")
+#                print(np.unique(actual))
+#                print("Classes in the prediction:")
+#                print(np.unique(prediction))
                 
             #combine mini-batch-wise results to determine epoch-wise results
             actual_epoch.extend(actual)
@@ -223,8 +263,10 @@ def train_models(train_x, train_y, dropout, #data
             loss_epoch += loss * B * L_i #'loss' is average loss, we need total loss
             
         #calculate the epoch-wise accuracy
-        accuracy = np.mean(prediction_epoch == actual_epoch)
-            
+        #actual_epoch = np.reshape(np.array(actual_epoch), (-1))
+        #prediction_epoch = np.reshape(np.array(prediction_epoch), (-1))
+        accuracy = np.mean(np.array(prediction_epoch) == np.array(actual_epoch))
+        
         #calculate epoch-wise f1-score: F1 = 2 * (precision * recall) / (precision + recall)
         f1 = f1_score(y_true = actual_epoch, y_pred = prediction_epoch, average='macro')                
  
@@ -302,152 +344,169 @@ def eval_models(sess,
     
     return accuracy, f1, prediction_probs
 
-         
+#### 6 CORE FUNCTION ####         
 
-#### PICK BEST X-MODELS FROM VALIDATION SET ####
-
-#### TEST MODEL PERFORMANCE ON TEST SET ####
-
-#### 5 VALIDATE/TEST THE MODEL ####
+def make_model(parameters):
+    
+    #read the parameters
+    overwrite = parameters['overwrite']
+    GPU = parameters['GPU']
+    DB = parameters['DB'] 
+    nodes = parameters['nodes']
+    n_layers = parameters['n_layers']
+    range_B = parameters['range_B'] 
+    range_L = parameters['range_L'] 
+    dropout = parameters['dropout']
+    n_epochs = parameters['n_epochs'] 
+    learning_rate = parameters['learning_rate']
+    best_of_n_CE = parameters['best_of_n_CE'] 
+    best_of_n_F1 = parameters['best_of_n_F1'] 
+    valid_window = parameters['valid_window']
+    test_window = parameters['test_window']
+    
+    print("\n \n START \n")
+    print(str(best_of_n_CE[1]) + " models using cross-entropy loss and " + 
+          str(best_of_n_F1[1]) + " models using f1 loss will be created.")
+    print("The embedded model will consist of the best " + str(best_of_n_CE[0]) + 
+          " models using cross-entropy loss and the best " + str(best_of_n_F1[0]) +
+          " models using f1 loss.")
+    print("Each model is trained on the training batch " + str(n_epochs) + 
+          " with each batch divided in " + str(range_B[0]) + " to " +
+          str(range_B[1]) + " mini-batches. \n \n")
+    
+    folder = "best_"+str(int(best_of_n_CE[0]))+"_of_"+str(int(best_of_n_CE[1]))+"_CE_oppDB"
+    
+    #check if the folder already exist and adapt name if necessary
+    while os.path.isdir("./model/" + folder):
+        if overwrite:
+            shutil.rmtree("./model/" + folder)
+        else: folder = folder + "new"        
+    folder = folder + "/" 
+    os.makedirs("./model/" + folder) #make the folder
+    
+    print("\n Data will be stored in " + os.getcwd() + './model/' + folder)
+    
+    seed = 0 #initialize seed - used to make runs comparible
+    
+    #first reset the computational graph (tensorflow struction)
+    tf.reset_default_graph()
+    
+    #load the database through the function 'loadingDB()' from dataset.py    
+    train_x, valid_x, test_x, train_y, valid_y, test_y = loadingDB('../', DB)
+    
+    #the y-variables have been loaded as databases, which causes some manipulation challenges
+    #thus we will reshape those to numpy arrays
+    train_y = np.array(train_y)
+    valid_y = np.array(valid_y)
+    test_y = np.array(test_y)
+    
+#    ###### TEMP STEPS TO SPEED UP TRAINING: REDUCE DATA SIZE 10x #######
+#    train_x = train_x[:round(train_x.shape[0]/10),:]
+#    train_y = train_y[:round(train_y.shape[0]/10),:]
+#    range_B = [16,32]
+#    #####################################################################
+    
+    dims = train_x.shape[1] #number of dimensions/features in the data
+    classes = train_y.shape[1] #number of classes in the labels
+    
+    #create placeholders
+    x, y, states_in, keep_prob = create_placeholders(dims, classes, n_layers, nodes)
+    
+    #Create model/Forward propagation: Build the forward propagation in the tensorflow graph
+    output, state = HAR_model(x, states_in, keep_prob, n_layers, nodes, classes) 
+    
+    #create a function to save weights and biases from training
+    saver = tf.train.Saver(tf.trainable_variables(), max_to_keep=1000)
+    
+    pre_test_results = {'model' : [], 'losstype' : [] ,'acc_train' : [], 'f1_train' : [],
+                        'acc_valid' : [], 'f1_valid' : []}
+    
+    for model in range(best_of_n_CE[1] + best_of_n_F1[1]):
         
-#### C DEFINING PARAMETERS AND RUN THE CODE ####
-
-
-#choose which database to use
-DB = 79 #79 is opp, 52 is pam, 60 is skoda
-
-#Model parameters
-nodes = 256
-n_layers = 2
-
-#Set hyperparameters
-range_B = [128, 256] #range of batch size when training
-range_L = [16,32] #range of window length when training
-dropout = .5
-n_epochs = 2
-losstype = 'CE'
-learning_rate=0.001
-n_training_models = 2
-
-#Model embedding structure 
-best_of_n_CE = [2,3] #how many models to create using cross-entropy and how many of the best to keep for the embedded model 
-best_of_n_F1 = [0,0] #how many models to create using f1-loss and how many of the best to keep for the embedded model 
-
-#Set validation parameters
-valid_window = 5000
-
-#Set test parameters
-test_window = 5000
-
-
-
-#### RUN CODE ####
-
-#TO DO: PRINT STATEMENT ABOUT WHAT MODEL IS BEING CREATED AND WHERE DATA WILL BE STORED
-
-seed = 0 #initialize seed
-
-#first reset the computational graph (tensorflow struction)
-tf.reset_default_graph()
-
-#load the database through the function 'loadingDB()' from dataset.py    
-train_x, valid_x, test_x, train_y, valid_y, test_y = loadingDB('../', DB)
-
-#the y-variables have been loaded as databases, which causes some manipulation challenges
-#thus we will reshape those to numpy arrays
-train_y = np.array(train_y)
-valid_y = np.array(valid_y)
-test_y = np.array(test_y)
-
-###### TEMP STEPS TO SPEED UP TRAINING: REDUCE DATA SIZE 10x #######
-train_x = train_x[:round(train_x.shape[0]/10),:]
-train_y = train_y[:round(train_y.shape[0]/10),:]
-range_B = [16,32]
-#####################################################################
-
-dims = train_x.shape[1]
-classes = train_y.shape[1]
-
-#create placeholders
-x, y, states_in, keep_prob = create_placeholders(dims, classes, n_layers, nodes)
-
-#Create model/Forward propagation: Build the forward propagation in the tensorflow graph
-output, state = HAR_model(x, states_in, keep_prob, n_layers, nodes, classes) 
-
-#create a function to save weights and biases from training
-saver = tf.train.Saver(tf.trainable_variables(), max_to_keep=1000)
-
-#TO DO: LOOP OVER BOTH LOSS TYPES, PROPER DOCUMENTATION
-best_of_n = best_of_n_CE
-losstype = 'CE'
-
-pre_test_results = np.zeros((best_of_n[1],5))
-
-for model in range(best_of_n[1]):
-     
-    #define model name based on loss-type used and n-th model created of that loss-type
-    model_name = losstype + '_model_' + str(model+1)
+        if model < best_of_n_CE[1]: losstype = 'CE'    
+        else: losstype = 'F1' 
+        
+        #define model name based on loss-type used and n-th model created of that loss-type
+        model_name = losstype + '_model_' + str(model+1)
+        
+        print("Training "+model_name)
+        
+        #define model execution parameters (only f_cost depends on the loss-type)
+        f_prediction, f_actual, f_prediction_probs, f_cost, optimizer, init = model_exe_funcs(output,y,losstype,learning_rate)
     
-    #define model execution parameters (only f_cost depends on the loss-type)
-    f_prediction, f_actual, f_prediction_probs, f_cost, optimizer, init = model_exe_funcs(output,y,losstype,learning_rate)
-
-    #train the model
-    sess, accuracy_train, f1_train, seed = train_models(train_x, train_y, dropout, #data
-                     x, y, states_in, keep_prob, #placeholders
-                     state, #from forward propagation
-                     f_prediction, f_actual, f_cost, optimizer, init, #modelling functions
-                     n_layers, nodes, #for setting initial state
-                     range_B, range_L, seed, #for constructing mini-batches
-                     n_epochs)
+        #train the model
+        sess, accuracy_train, f1_train, seed = train_models(train_x, train_y, dropout, #data
+                         x, y, states_in, keep_prob, #placeholders
+                         state, #from forward propagation
+                         f_prediction, f_actual, f_cost, optimizer, init, #modelling functions
+                         n_layers, nodes, #for setting initial state
+                         range_B, range_L, seed, #for constructing mini-batches
+                         n_epochs, GPU)
+        
+        #store results
+        pre_test_results['model'].append(model_name)
+        pre_test_results['losstype'].append(losstype)
+        pre_test_results['acc_train'].append(accuracy_train)
+        pre_test_results['f1_train'].append(f1_train)
     
-    pre_test_results[model,0] = model + 1
-    pre_test_results[model,1] = accuracy_train
-    pre_test_results[model,2] = f1_train
-
-    #save the model
-    saver.save(sess, './model/' + model_name)
-    print("Training " + model_name + " complete and saved")
-    
-    #perform validation
-    accuracy_valid, f1_valid, _ = eval_models(sess, 
-                valid_x, valid_y, #data
-                x, y, states_in, keep_prob, #placeholders
-                state, #from forward propagation
-                f_prediction, f_actual, f_prediction_probs, f_cost, init, #modelling functions
-                n_layers, nodes, #for setting initial state
-                valid_window)
-    
-    pre_test_results[model,3] = accuracy_valid
-    pre_test_results[model,4] = f1_valid
+        #save the model
+        saver.save(sess, './model/' + folder + model_name)
+        print("Training " + model_name + " complete and saved")
+        
+        #perform validation
+        accuracy_valid, f1_valid, _ = eval_models(sess, 
+                    valid_x, valid_y, #data
+                    x, y, states_in, keep_prob, #placeholders
+                    state, #from forward propagation
+                    f_prediction, f_actual, f_prediction_probs, f_cost, init, #modelling functions
+                    n_layers, nodes, #for setting initial state
+                    valid_window)
+            
+        pre_test_results['acc_valid'].append(accuracy_valid)
+        pre_test_results['f1_valid'].append(f1_valid)
+        
+        #storing of results in dataframe format to csv file
+        pd.DataFrame(pre_test_results).to_csv('./model/' + folder + 'results_train_valid.csv')
          
-    sess.close() 
-
-#perform the model on the test set
+        sess.close() 
     
-#we select the 'best' models on the f1 performance on the validation set (others scores are for information purpose only)
-
-#sort the validation results based on the performance on f1
-pre_test_results = pre_test_results[np.argsort(pre_test_results[:,4]),:] 
-
-#get the model references of the n-best models
-best_models = pre_test_results[:best_of_n[0],0]
-
-####----this is where the function should end and return best_models per loss type
-
-#initialize a matrix to store the probabilities of the predictions from the models that build the embedded model
-prediction_probs_all_models = np.zeros((len(best_models),test_y.shape[0],test_y.shape[1])) 
-
-with tf.Session() as sess:
-
+    #perform the model on the test set
+        
+    #we select the 'best' models on the f1 performance on the validation set (others scores are for information purpose only)
+    
+    #sort the validation results based on the performance on f1
+    pre_test_results = pd.DataFrame(pre_test_results).sort_values(by=['f1_valid']) 
+    
+    #get the model references of the n-best models
+    best_CE = np.where(pre_test_results.loc[:]['losstype'] == 'CE')[0][:best_of_n_CE[0]]
+    best_F1 = np.where(pre_test_results.loc[:]['losstype'] == 'f1')[0][:best_of_n_F1[0]]
+    best_models = np.concatenate((best_CE, best_F1))
+    
+    ####----this is where the function should end and return best_models per loss type
+    
+    #initialize a matrix to store the probabilities of the predictions from the models that build the embedded model
+    prediction_probs_all_models = np.zeros((len(best_models),test_y.shape[0],test_y.shape[1])) 
+    
+    if GPU: #configuring GPU use for tensorflow models
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth = True
+        sess = tf.Session(config=config) # is use gpu
+    else: sess = tf.Session() #or use only the CPU   
+    
     i = 0 #counter parrellel to the 'model' index, because 'model' is not from 0:n_models
     
     for model in best_models:
         
         #find the name of the corresponding model
-        model_name = losstype + '_model_' + str(int(model))
+        model_name = pre_test_results.loc[model]['model']
         
         #load the weights and biases from the corresponding session
-        saver.restore(sess, './model/' + model_name)
+        saver.restore(sess, './model/' + folder + model_name)
+        
+        losstype = pre_test_results.loc[model]['losstype']
+        
+        #define model execution parameters (only f_cost depends on the loss-type)
+        f_prediction, f_actual, f_prediction_probs, f_cost, _, init = model_exe_funcs(output,y,losstype,learning_rate)
     
         _,_,prediction_probs = eval_models(sess, 
                         test_x, test_y, #data
@@ -460,14 +519,29 @@ with tf.Session() as sess:
         prediction_probs_all_models[i,:,:] = prediction_probs
         
         i = i + 1 #update counter
-            
-prediction_probs_all_models = np.sum(prediction_probs_all_models, axis = 0)
-
-prediction = np.argmax(prediction_probs_all_models, axis = -1)
-actual = np.argmax(test_y, axis = -1)
-accuracy = np.mean(prediction == actual)
-f1 = f1_score(y_true = np.array(actual), y_pred = np.array(prediction), average='macro')
+        
+    sess.close()
+                
+    prediction_probs_all_models = np.sum(prediction_probs_all_models, axis = 0)
     
-print("Embedded model has accuracy of %.2f and f1-score of %.2f" % (accuracy, f1))    
+    prediction = np.argmax(prediction_probs_all_models, axis = -1)
+    actual = np.argmax(test_y, axis = -1)
+    accuracy = np.mean(prediction == actual)
+    f1 = f1_score(y_true = np.array(actual), y_pred = np.array(prediction), average='macro')
+    test_results = {'accuracy' : accuracy, 'f1-score' : f1}  
+    
+    #save results
+    with open('./model/' + folder + 'test_results.csv', 'w') as f:  # 'w' for 'write'
+        w = csv.DictWriter(f, test_results.keys())
+        w.writeheader()
+        w.writerow(test_results)
+    
+    print("Embedded model has accuracy of %.2f and f1-score of %.2f" % (accuracy, f1))    
+    print("\n Data stored in " + os.getcwd() + './model/' + folder)
+    print("\n COMPLETE")
+    
+    #TO DO: PRINT END STATEMENT ABOUT COMPLETEION AND WHAT MODEL WAS BEING CREATED AND STORED WHERE
 
-#TO DO: PRINT END STATEMENT ABOUT COMPLETEION AND WHAT MODEL WAS BEING CREATED AND STORED WHERE
+#### RUN CODE ####
+make_model(get_parameters())
+
