@@ -8,8 +8,8 @@ def loadingDB(fileDir, DB=79):
 	if DB==79: 
 		matfile = fileDir+'Ensemble-datasets/OPP/Opp'+str(DB)+'.mat'
 		print(matfile)
-		data = scipy.io.loadmat(matfile)
-		
+		data = scipy.io.loadmat(matfile)		
+        
 		X_train = np.transpose(data['trainingData'])
 		X_valid = np.transpose(data['valData'])
 		X_test = np.transpose(data['testingData'])
