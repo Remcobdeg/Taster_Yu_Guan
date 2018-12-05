@@ -1,0 +1,8 @@
+n_layers,n_F1_models,embedded_models,overwrite,learning_rate,GPU,n_CE_models,range_L,valid_window,test_window,n_epochs,dataset,nodes,range_B,dropout
+2,100,"[[ 1  0]
+ [ 0  1]
+ [10  0]
+ [ 0 10]
+ [20  0]
+ [ 0 20]
+ [10 10]]",True,0.001,True,100,"[16, 32]",5000,5000,1,Opportunity,256,"[128, 256]",0.5
