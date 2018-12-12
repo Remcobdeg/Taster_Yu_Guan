@@ -34,6 +34,7 @@ import pandas as pd #to create dataframes
 import shutil #to delete folders
 import csv #to print dictionaries
 from datetime import datetime #get time stamps
+from time import time #calculate time difference
 #import pdb #debugging package - use by including 'pdb.set_trace()' in code
 #use pdb.set_trace() and call variable by typing "p a_variable" in the console
 
@@ -74,6 +75,7 @@ def get_parameters():
         }
     
     return parameters
+
 
 #### 3 SUPPORT FUNCTIONS ####
 
@@ -430,7 +432,7 @@ def eval_models(sess,
 #    print("Classes in the prediction:")
 #    print(np.unique(prediction))
     
-    print("Result single model validation: \n loss: %.3f, accuracy: %.2f, f1-score: %.2f \n" % 
+    print("Result model evaluation: \n loss: %.3f, accuracy: %.2f, f1-score: %.2f \n" % 
           (loss, accuracy, f1))
     
     return accuracy, f1, prediction_probs
@@ -478,6 +480,9 @@ def plot_confusion_matrix(cm, classes,
 
 def make_model(parameters):
     
+    #time stamp for calculating preperation time
+    start_time = time()
+    
     #read the parameters
     overwrite = parameters['overwrite']
     GPU = parameters['GPU']
@@ -495,34 +500,65 @@ def make_model(parameters):
     valid_window = parameters['valid_window']
     test_window = parameters['test_window']
     
-    #print a starting message
-    print("\n \n START \n")
-    print("creating " + str(n_CE_models) + " models with CE-loss and " +
-          str(n_F1_models) + " models with F1-loss. \n \n")
     
-    #name the folder after the dataset used and the time
-    folder = dataset + datetime.now().strftime('%Y-%m-%d_%H%M') 
+    #check for existance of a previous unfinished process
+    continue_prev_process = 'N' #initialize
+    if os.path.isfile('process_state.npy'):
+        process_state = np.load('process_state.npy').item()
+        
+        if process_state['testing'] != 'completed':
+            print('\n The is an unfinhed process:')
+            print(process_state)
+            print('\n Continue from unfinished process?')
+            continue_prev_process = input('Y/N: \n')
     
-    #check if the folder already exist and adapt name if necessary
-    while os.path.isdir("./model/" + folder):
-        if overwrite:
-            shutil.rmtree("./model/" + folder)
-        else: folder = folder + "dub"        
-    folder = folder + "/" 
-    os.makedirs("./model/" + folder) #make the folder
-    os.makedirs("./results/" + folder) #make the folder
     
-    print("\n models will be stored in " + os.getcwd() + './model/' + folder)
-    print("\n results will be stored in " + os.getcwd() + './results/' + folder)
-    
-    #store the parameter values
-    with open('./results/' + folder + 'parameters.csv', 'w') as f:  # 'w' for 'write'
-        w = csv.DictWriter(f, parameters.keys())
-        w.writeheader()
-        w.writerow(parameters)
-    
-    seed = 0 #initialize seed - used to make runs comparible
-    
+    if continue_prev_process == 'N':
+        #initializing a new process
+        
+        model = 0 #counter used when training the models 
+        seed = 0 #initialize seed - used to make runs comparible
+        
+        #print a starting message
+        print("\n \n START \n")
+        print("creating " + str(n_CE_models) + " models with CE-loss and " +
+              str(n_F1_models) + " models with F1-loss. \n \n")
+        
+        #name the folder after the dataset used and the time
+        folder = dataset + datetime.now().strftime('%Y-%m-%d_%H%M') 
+        
+        #check if the folder already exist and adapt name if necessary
+        while os.path.isdir("./model/" + folder):
+            if overwrite:
+                shutil.rmtree("./model/" + folder)
+            else: folder = folder + "dub"        
+        folder = folder + "/" 
+        os.makedirs("./model/" + folder) #make the folder
+        os.makedirs("./results/" + folder) #make the folder
+        
+        print("\n models will be stored in " + os.getcwd() + './model/' + folder)
+        print("\n results will be stored in " + os.getcwd() + './results/' + folder)
+        
+        #store the parameter values
+        with open('./results/' + folder + 'parameters.csv', 'w') as f:  # 'w' for 'write'
+            w = csv.DictWriter(f, parameters.keys())
+            w.writeheader()
+            w.writerow(parameters)
+        
+        #create a dictionary for storing the results of each single model
+        pre_test_results = {'model' : [], 'losstype' : [] ,'acc_train' : [], 'f1_train' : [],
+                        'acc_valid' : [], 'f1_valid' : [], 'train_time' : []}
+        
+    else:
+        #continue from previous process
+        model = process_state['last_model']
+        seed = process_state['seed']
+        folder = process_state['folder']
+        pre_test_results = pd.read_csv('./results/' + folder + 
+                                       'results_train_valid.csv', index_col = 0).to_dict(orient='list')
+
+        print('\n Continuing previous process \n')
+        
     
     ## LOAD DATA
     
@@ -561,16 +597,18 @@ def make_model(parameters):
     #we want to store many models, so set max_keep to a high number
     saver = tf.train.Saver(tf.trainable_variables(), max_to_keep=10000)
         
+    #determine preparation time
+    prep_time = (time()-start_time)/60 #in minutes
+    
     
     ## TRAIN AND VALIDATE THE SINGLE MODELS    
     
-    #create a dictionary for storing the results of each single model
-    pre_test_results = {'model' : [], 'losstype' : [] ,'acc_train' : [], 'f1_train' : [],
-                        'acc_valid' : [], 'f1_valid' : []}
-    
     #per model that we create we train, assess the performance of the
     # single model on the validation set it and store results
-    for model in range(n_CE_models + n_F1_models):
+    while model < (n_CE_models + n_F1_models):
+        
+        #stamp time for calculating time difference
+        start_time = time()
         
         if model < n_CE_models: losstype = 'CE'    
         else: losstype = 'F1' 
@@ -613,9 +651,20 @@ def make_model(parameters):
         pre_test_results['acc_valid'].append(accuracy_valid)
         pre_test_results['f1_valid'].append(f1_valid)
         
+        model = model + 1 #update model counter
+        
+        #register training time
+        pre_test_results['train_time'].append((time()-start_time)/60)
+        
         #storing of results in dataframe format to csv file
         pd.DataFrame(pre_test_results).to_csv('./results/' + folder + 'results_train_valid.csv')
-         
+                
+        #saving current status in both essemble folder and main folder
+        np.save('process_state.npy', {'folder' : folder, 'last_model' : model, 
+                                      'out_of' : n_CE_models + n_F1_models, 
+                                      'seed' : seed, 'testing' : 'not started'})
+        
+       
         sess.close() 
     
     
@@ -624,14 +673,17 @@ def make_model(parameters):
     #we select the 'best' models on the f1 performance on the validation set (others scores are for information purpose only)
     
     #create a dictionary for storing the results of each essembly
-    test_results = {'model' : [], 'accuracy' : [], 'f1' : []}
+    test_results = {'model' : [], 'accuracy' : [], 'f1' : [], 'test_time' : []}
     
     #sort the validation results based on the performance on f1
     pre_test_results = pd.DataFrame(pre_test_results).sort_values(by=['f1_valid'], ascending=False) 
         
     #the next steps are performed per embedded model structure created
     for essembly in embedded_models:
-    
+        
+        #start a time couter
+        start_time = time()
+        
         #get the model references of the n-best models
         best_CE = np.where(pre_test_results.loc[:]['losstype'] == 'CE')[0][:essembly[0]]
         best_F1 = np.where(pre_test_results.loc[:]['losstype'] == 'F1')[0][:essembly[1]]
@@ -690,14 +742,10 @@ def make_model(parameters):
         accuracy = np.mean(prediction == actual)
         f1 = f1_score(y_true = np.array(actual), y_pred = np.array(prediction), average='macro')
         
-        #add results to dictionary
-        essembly_name = str(essembly[0]) + '_CE_' + str(essembly[1]) + '_F1_essembly'
-        test_results['model'].append(essembly_name)
-        test_results['accuracy'].append(accuracy)
-        test_results['f1'].append(f1)
         
         #make and save the confusion matrix
-        labels = ["%i" % x for x in np.arange(classes)]
+        essembly_name = str(essembly[0]) + '_CE_' + str(essembly[1]) + '_F1_essembly'
+        labels = ["%i" % label for label in np.arange(classes)]
         cm = confusion_matrix(prediction, actual)
         path = './results/' + folder + 'confusion_' + essembly_name
         plot_confusion_matrix(cm, labels, path = path + '.jpg') #save as picture
@@ -706,16 +754,37 @@ def make_model(parameters):
 
         print("Embedded model has accuracy of %.2f and f1-score of %.2f" % (accuracy, f1))    
         
+        #add results to dictionary
+        test_results['model'].append(essembly_name)
+        test_results['accuracy'].append(accuracy)
+        test_results['f1'].append(f1)
+        test_results['test_time'].append((time()-start_time)/60)
+        
     #storing of test results in dataframe format to csv file
     pd.DataFrame(test_results).to_csv('./results/' + folder + 'test_results.csv')
+    
+    #store file with information about the time taken
+    process_time = {'prep_time' : prep_time, 'avg_train_time' : np.mean(pre_test_results['train_time']),
+                    'avg_test_time' : np.mean(test_results['test_time'])}
+    with open('./results/' + folder + 'process_time.csv', 'w') as f:  # 'w' for 'write'
+        w = csv.DictWriter(f, process_time.keys())
+        w.writeheader()
+        w.writerow(process_time)
     
     #print an overview
     print(parameters)
     print(pre_test_results)
     print(test_results)
+    
+    #update the process state to being finished
+    np.save('process_state.npy', {'folder' : folder, 'last_model' : '', 
+                          'out_of' : n_CE_models + n_F1_models, 
+                          'seed' : seed, 'testing' : 'completed'})
 
     print("\n COMPLETE")        
     print("\n Data stored in " + os.getcwd() + './results/' + folder)
+
+
 
  
      
